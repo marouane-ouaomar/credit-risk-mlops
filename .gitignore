@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/raw/
+data/processed/
+data/logs/
+models/*.pkl
+*.zip
+.DS_Store
+.env
