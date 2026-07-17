@@ -20,21 +20,22 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # NOTE: model artifacts are not committed to the repo (see .gitignore).
-      # For CI to run the API-dependent tests, either:
-      #   (a) commit small model artifacts via Git LFS, or
-      #   (b) train a tiny dummy model as part of this step, or
-      #   (c) restrict this job to lint + unit tests that don't need the model,
-      #       and run the full test suite as a separate manual/deploy step.
-      # This project ships option (b): a fast synthetic-data smoke train.
-      - name: Train a fast smoke-test model
+      # NOTE: model artifacts and real Kaggle data are not committed to the
+      # repo (see .gitignore) — Kaggle credentials shouldn't live in CI, and
+      # the real tables are multiple GB. For CI to exercise the pipeline,
+      # this step generates small synthetic tables with the same schema
+      # (application_train + bureau + previous_application) and runs the
+      # real build_features -> data_processing -> train pipeline against
+      # them. This is a legitimate MLOps pattern: CI proves the *pipeline*
+      # is correct; a separate, manual retraining step uses the real data.
+      - name: Generate synthetic multi-table data + run full pipeline
         run: |
           mkdir -p models data/processed data/raw
           python -c "
           import pandas as pd, numpy as np
           np.random.seed(0)
-          n = 2000
-          df = pd.DataFrame({
+          n = 1000
+          app = pd.DataFrame({
               'SK_ID_CURR': range(n),
               'TARGET': np.random.binomial(1, 0.08, n),
               'AMT_INCOME_TOTAL': np.random.uniform(50000, 300000, n),
@@ -53,8 +54,36 @@ jobs:
               'FLAG_OWN_REALTY': np.random.choice(['Y', 'N'], n),
               'NAME_EDUCATION_TYPE': np.random.choice(['Higher education', 'Secondary'], n),
           })
-          df.to_csv('data/raw/application_train.csv', index=False)
+          app.to_csv('data/raw/application_train.csv', index=False)
+
+          has_bureau = np.random.choice(app['SK_ID_CURR'], int(n*0.5), replace=False)
+          bureau_rows, bid = [], 0
+          for cid in has_bureau:
+              for _ in range(np.random.randint(1, 4)):
+                  bureau_rows.append({'SK_ID_CURR': cid, 'SK_ID_BUREAU': bid,
+                      'CREDIT_ACTIVE': np.random.choice(['Active','Closed']),
+                      'DAYS_CREDIT': -np.random.randint(0,3000),
+                      'CREDIT_DAY_OVERDUE': np.random.choice([0,0,5]),
+                      'AMT_CREDIT_SUM': np.random.uniform(1000,200000),
+                      'AMT_CREDIT_SUM_DEBT': np.random.uniform(0,100000),
+                      'AMT_CREDIT_SUM_OVERDUE': np.random.choice([0,0,500])})
+                  bid += 1
+          pd.DataFrame(bureau_rows).to_csv('data/raw/bureau.csv', index=False)
+
+          has_prev = np.random.choice(app['SK_ID_CURR'], int(n*0.5), replace=False)
+          prev_rows, pid = [], 0
+          for cid in has_prev:
+              for _ in range(np.random.randint(1,3)):
+                  prev_rows.append({'SK_ID_CURR': cid, 'SK_ID_PREV': pid,
+                      'NAME_CONTRACT_STATUS': np.random.choice(['Approved','Refused']),
+                      'AMT_CREDIT': np.random.uniform(10000,300000),
+                      'AMT_ANNUITY': np.random.uniform(2000,20000),
+                      'DAYS_DECISION': -np.random.randint(0,2000)})
+                  pid += 1
+          pd.DataFrame(prev_rows).to_csv('data/raw/previous_application.csv', index=False)
+          print('synthetic data generated (bureau_balance/POS_CASH/installments/credit_card omitted -- build_features.py handles missing tables gracefully)')
           "
+          python -m src.build_features
           python -m src.data_processing
           python -m src.train
 
