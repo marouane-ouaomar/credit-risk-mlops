@@ -5,7 +5,6 @@ __pycache__/
 data/raw/
 data/processed/
 data/logs/
-models/*.pkl
 *.zip
 .DS_Store
 .env
